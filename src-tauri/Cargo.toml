@@ -1,6 +1,6 @@
 [package]
 name = "wxclone"
-version = "0.1.1"
+version = "0.1.2"
 description = "A small macOS utility for managing multiple WeChat clones."
 authors = ["WxClone"]
 edition = "2021"

@@ -5,7 +5,8 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    sync::mpsc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::Manager;
 
@@ -14,6 +15,7 @@ const CONFIG_FILE: &str = "profiles.json";
 const SETTINGS_FILE: &str = "settings.json";
 const LOG_DIR_NAME: &str = "com.richqaq.wxclone";
 const LOG_FILE_NAME: &str = "wxclone.log";
+const UPDATE_CHECK_TIMEOUT_SECS: u64 = 15;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CloneProfile {
@@ -92,11 +94,31 @@ fn get_app_version() -> String {
 }
 
 #[tauri::command]
-fn check_for_update() -> Result<UpdateInfo, String> {
+async fn check_for_update() -> Result<UpdateInfo, String> {
+    tauri::async_runtime::spawn_blocking(check_for_update_with_timeout)
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+fn check_for_update_with_timeout() -> Result<UpdateInfo, String> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(check_for_update_blocking());
+    });
+
+    rx.recv_timeout(Duration::from_secs(UPDATE_CHECK_TIMEOUT_SECS))
+        .unwrap_or_else(|_| Err("版本检查超时，请稍后重试或直接打开 GitHub Releases。".to_string()))
+}
+
+fn check_for_update_blocking() -> Result<UpdateInfo, String> {
     let output = Command::new("/usr/bin/curl")
         .arg("-sSL")
+        .arg("--connect-timeout")
+        .arg("5")
         .arg("--max-time")
         .arg("12")
+        .arg("--retry")
+        .arg("0")
         .arg("-H")
         .arg("Accept: application/vnd.github+json")
         .arg("-H")
@@ -213,7 +235,13 @@ fn save_profiles(
 }
 
 #[tauri::command]
-fn sync_profile(profile: CloneProfile) -> Result<OperationResult, String> {
+async fn sync_profile(profile: CloneProfile) -> Result<OperationResult, String> {
+    tauri::async_runtime::spawn_blocking(move || sync_profile_blocking(profile))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+fn sync_profile_blocking(profile: CloneProfile) -> Result<OperationResult, String> {
     let profile = normalize_profile(profile)?;
     let app_path = app_path_for(&profile.install_dir, &profile.name);
     let script = format!(
@@ -308,13 +336,19 @@ log "done: ${{DEST}}"
 }
 
 #[tauri::command]
-fn sync_all(profiles: Vec<CloneProfile>) -> Result<Vec<OperationResult>, String> {
+async fn sync_all(profiles: Vec<CloneProfile>) -> Result<Vec<OperationResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || sync_all_blocking(profiles))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+fn sync_all_blocking(profiles: Vec<CloneProfile>) -> Result<Vec<OperationResult>, String> {
     let mut results = Vec::new();
     for profile in normalize_profiles(profiles)?
         .into_iter()
         .filter(|item| item.enabled)
     {
-        results.push(sync_profile(profile)?);
+        results.push(sync_profile_blocking(profile)?);
     }
     Ok(results)
 }
@@ -341,7 +375,13 @@ fn launch_profile(profile: CloneProfile) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn remove_profile_app(profile: CloneProfile) -> Result<(), String> {
+async fn remove_profile_app(profile: CloneProfile) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || remove_profile_app_blocking(profile))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+fn remove_profile_app_blocking(profile: CloneProfile) -> Result<(), String> {
     let profile = normalize_profile(profile)?;
     let app_path = app_path_for(&profile.install_dir, &profile.name);
     let script = format!(
@@ -359,7 +399,13 @@ fi
 }
 
 #[tauri::command]
-fn choose_source_app() -> Result<Option<String>, String> {
+async fn choose_source_app() -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(choose_source_app_blocking)
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+fn choose_source_app_blocking() -> Result<Option<String>, String> {
     let script = r#"try
   POSIX path of (choose file with prompt "选择微信源应用" of type {"app"})
 on error number -128

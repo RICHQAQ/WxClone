@@ -91,11 +91,6 @@ type ToastState = {
   actionLabel?: string
 }
 
-type BusyState = {
-  action: string
-  id?: string
-}
-
 const SOURCE_HINT = "/Applications/WeChat.app"
 const INSTALL_HINT = "/Applications"
 const MOCK_PROFILE_KEY = "wxclone.mock.profiles.v2"
@@ -118,6 +113,20 @@ function cleanDir(path: string) {
 
 function appPathFor(profile: Pick<CloneProfile, "name" | "install_dir">) {
   return `${INSTALL_HINT}/${cleanAppName(profile.name)}.app`
+}
+
+function profileBusyKey(action: string, profile: Pick<CloneProfile, "id">) {
+  return `${action}:${profile.id}`
+}
+
+function hasCloneWriteBusy(busyKeys: string[]) {
+  return busyKeys.some(
+    (key) =>
+      key === "create" ||
+      key === "sync-all" ||
+      key.startsWith("sync:") ||
+      key.startsWith("delete:"),
+  )
 }
 
 function defaultProfiles(settings = DEFAULT_SETTINGS): CloneProfile[] {
@@ -237,6 +246,22 @@ async function callCommand<T>(command: string, args?: Record<string, unknown>) {
   return undefined as T
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = window.setTimeout(() => reject(new Error(message)), timeoutMs)
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeout)
+        resolve(value)
+      },
+      (error) => {
+        window.clearTimeout(timeout)
+        reject(error)
+      },
+    )
+  })
+}
+
 export default function App() {
   const [view, setView] = useState<"home" | "settings">("home")
   const [environment, setEnvironment] = useState<EnvironmentInfo | null>(null)
@@ -245,7 +270,7 @@ export default function App() {
   const [profiles, setProfiles] = useState<CloneProfile[]>([])
   const [draft, setDraft] = useState<CloneProfile | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
-  const [busy, setBusy] = useState<BusyState | null>(null)
+  const [busyKeys, setBusyKeys] = useState<string[]>([])
   const [createError, setCreateError] = useState("")
   const [sourceIconPath, setSourceIconPath] = useState<string | null>(null)
   const [profileIconPaths, setProfileIconPaths] = useState<Record<string, string | null>>({})
@@ -255,7 +280,14 @@ export default function App() {
     () => profiles.filter((profile) => profile.enabled).length,
     [profiles],
   )
-  const isBusy = Boolean(busy)
+  async function runBusy<T>(key: string, task: () => Promise<T>) {
+    setBusyKeys((current) => (current.includes(key) ? current : [...current, key]))
+    try {
+      return await task()
+    } finally {
+      setBusyKeys((current) => current.filter((item) => item !== key))
+    }
+  }
 
   useEffect(() => {
     void refresh()
@@ -272,8 +304,7 @@ export default function App() {
   }, [environment?.source_path, profiles.map((profile) => `${profile.id}:${appPathFor(profile)}`).join("|")])
 
   async function refresh() {
-    setBusy({ action: "refresh" })
-    try {
+    await runBusy("refresh", async () => {
       const loadedSettings = await callCommand<AppSettings>("load_settings")
       const [env, loadedProfiles, version] = await Promise.all([
         callCommand<EnvironmentInfo>("get_environment", {
@@ -286,11 +317,7 @@ export default function App() {
       setEnvironment(env)
       setProfiles(loadedProfiles)
       setAppVersion(version)
-    } catch (err) {
-      notifyError(err)
-    } finally {
-      setBusy(null)
-    }
+    }).catch(notifyError)
   }
 
   async function loadIcons() {
@@ -388,8 +415,7 @@ export default function App() {
       return
     }
 
-    setBusy({ action: "create-check" })
-    try {
+    await runBusy("create", async () => {
       const conflict = await callCommand<ConflictInfo>("check_profile_conflict", {
         profile: draft,
       })
@@ -421,25 +447,16 @@ export default function App() {
       }
       setCreateOpen(false)
       setDraft(null)
-    } catch (err) {
-      notifyError(err)
-    } finally {
-      setBusy(null)
-    }
+    }).catch(notifyError)
   }
 
   async function saveCurrentSettings() {
-    setBusy({ action: "settings-save" })
-    try {
+    await runBusy("settings-save", async () => {
       const saved = await callCommand<AppSettings>("save_settings", { settings })
       setSettings(saved)
       await refreshEnvironment(saved)
       notify("设置已保存")
-    } catch (err) {
-      notifyError(err)
-    } finally {
-      setBusy(null)
-    }
+    }).catch(notifyError)
   }
 
   async function saveProfiles(nextProfiles = profiles) {
@@ -451,8 +468,7 @@ export default function App() {
   }
 
   async function syncOne(profile: CloneProfile) {
-    setBusy({ action: "sync", id: profile.id })
-    try {
+    await runBusy(profileBusyKey("sync", profile), async () => {
       const saved = await saveProfiles()
       const current = saved.find((item) => item.id === profile.id)
       if (!current) return
@@ -460,82 +476,56 @@ export default function App() {
         profile: current,
       })
       notify(`已同步版本 ${current.name}`, result.app_path)
-    } catch (err) {
-      notifyError(err)
-    } finally {
-      setBusy(null)
-    }
+    }).catch(notifyError)
   }
 
   async function syncEnabled() {
-    setBusy({ action: "sync-all" })
-    try {
+    await runBusy("sync-all", async () => {
       const saved = await saveProfiles()
       const results = await callCommand<OperationResult[]>("sync_all", {
         profiles: saved,
       })
       notify("版本同步完成", `已同步 ${results.length} 个微信副本`)
-    } catch (err) {
-      notifyError(err)
-    } finally {
-      setBusy(null)
-    }
+    }).catch(notifyError)
   }
 
   async function launch(profile: CloneProfile) {
-    setBusy({ action: "launch", id: profile.id })
-    try {
+    await runBusy(profileBusyKey("launch", profile), async () => {
       await callCommand("launch_profile", { profile })
       notify("已启动", profile.name)
-    } catch (err) {
-      notifyError(err)
-    } finally {
-      setBusy(null)
-    }
+    }).catch(notifyError)
   }
 
   async function reveal(profile: CloneProfile) {
-    setBusy({ action: "reveal", id: profile.id })
-    try {
+    await runBusy(profileBusyKey("reveal", profile), async () => {
       await callCommand("reveal_profile_app", { profile })
       notify("已输出到 Finder", appPathFor(profile))
-    } catch (err) {
-      notifyError(err)
-    } finally {
-      setBusy(null)
-    }
+    }).catch(notifyError)
   }
 
   async function deleteProfile(profile: CloneProfile) {
-    setBusy({ action: "delete", id: profile.id })
-    try {
+    await runBusy(profileBusyKey("delete", profile), async () => {
       await callCommand("remove_profile_app", { profile })
       const nextProfiles = profiles.filter((item) => item.id !== profile.id)
       await saveProfiles(nextProfiles)
       notify("已删除", profile.name)
-    } catch (err) {
-      notifyError(err)
-    } finally {
-      setBusy(null)
-    }
+    }).catch(notifyError)
   }
 
   async function chooseSourcePath(onChoose: (path: string) => void) {
-    setBusy({ action: "choose-source" })
-    try {
+    await runBusy("choose-source", async () => {
       const path = await callCommand<string | null>("choose_source_app")
       if (path) onChoose(path)
-    } catch (err) {
-      notifyError(err)
-    } finally {
-      setBusy(null)
-    }
+    }).catch(notifyError)
   }
 
   async function checkUpdate() {
-    setBusy({ action: "check-update" })
-    try {
-      const update = await callCommand<UpdateInfo>("check_for_update")
+    await runBusy("check-update", async () => {
+      const update = await withTimeout(
+        callCommand<UpdateInfo>("check_for_update"),
+        16_000,
+        "版本检查超时，请稍后重试。",
+      )
       setAppVersion(update.current_version)
       if (update.has_update) {
         notify(
@@ -547,11 +537,7 @@ export default function App() {
       } else {
         notify("已是最新版本", `当前版本 ${update.current_version}`)
       }
-    } catch (err) {
-      notifyError(err)
-    } finally {
-      setBusy(null)
-    }
+    }).catch(notifyError)
   }
 
   function toggleEnabled(profile: CloneProfile, enabled: boolean) {
@@ -600,10 +586,9 @@ export default function App() {
             environment={environment}
             profiles={profiles}
             enabledCount={enabledCount}
-            busy={busy}
+            busyKeys={busyKeys}
             sourceIconPath={sourceIconPath}
             profileIconPaths={profileIconPaths}
-            isBusy={isBusy}
             onRefresh={refresh}
             onCreate={openCreateDialog}
             onSyncAll={syncEnabled}
@@ -617,8 +602,7 @@ export default function App() {
             settings={settings}
             appVersion={appVersion}
             setSettings={setSettings}
-            isBusy={isBusy}
-            busy={busy}
+            busyKeys={busyKeys}
             onSave={saveCurrentSettings}
             onRefresh={refresh}
             onCheckUpdate={checkUpdate}
@@ -635,7 +619,7 @@ export default function App() {
         draft={draft}
         updateDraft={updateDraft}
         createError={createError}
-        isBusy={isBusy}
+        busyKeys={busyKeys}
         onCreate={createProfile}
         onChooseSource={(callback) => void chooseSourcePath(callback)}
       />
@@ -647,10 +631,9 @@ function HomeView({
   environment,
   profiles,
   enabledCount,
-  busy,
+  busyKeys,
   sourceIconPath,
   profileIconPaths,
-  isBusy,
   onRefresh,
   onCreate,
   onSyncAll,
@@ -662,10 +645,9 @@ function HomeView({
   environment: EnvironmentInfo | null
   profiles: CloneProfile[]
   enabledCount: number
-  busy: BusyState | null
+  busyKeys: string[]
   sourceIconPath: string | null
   profileIconPaths: Record<string, string | null>
-  isBusy: boolean
   onRefresh: () => Promise<void>
   onCreate: () => void
   onSyncAll: () => Promise<void>
@@ -674,6 +656,10 @@ function HomeView({
   onDelete: (profile: CloneProfile) => Promise<void>
   onToggleEnabled: (profile: CloneProfile, enabled: boolean) => void
 }) {
+  const isRefreshBusy = busyKeys.includes("refresh")
+  const isSyncAllBusy = busyKeys.includes("sync-all")
+  const isCloneWriteBusy = hasCloneWriteBusy(busyKeys)
+
   return (
     <>
       <section className="rounded-lg border bg-card p-5 shadow-sm">
@@ -704,16 +690,27 @@ function HomeView({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" onClick={() => void onRefresh()} disabled={isBusy}>
-              <RefreshCw data-icon="inline-start" />
+            <Button
+              variant="outline"
+              onClick={() => void onRefresh()}
+              disabled={isRefreshBusy}
+            >
+              {isRefreshBusy ? (
+                <Loader2 className="animate-spin" data-icon="inline-start" />
+              ) : (
+                <RefreshCw data-icon="inline-start" />
+              )}
               刷新
             </Button>
-            <Button variant="outline" onClick={onCreate} disabled={isBusy}>
+            <Button variant="outline" onClick={onCreate} disabled={isCloneWriteBusy}>
               <Plus data-icon="inline-start" />
               创建
             </Button>
-            <Button onClick={() => void onSyncAll()} disabled={isBusy || enabledCount === 0}>
-              {busy?.action === "sync-all" ? (
+            <Button
+              onClick={() => void onSyncAll()}
+              disabled={isCloneWriteBusy || enabledCount === 0}
+            >
+              {isSyncAllBusy ? (
                 <Loader2 className="animate-spin" data-icon="inline-start" />
               ) : (
                 <FolderSync data-icon="inline-start" />
@@ -736,7 +733,9 @@ function HomeView({
 
         <div className="flex flex-col gap-2">
           {profiles.map((profile) => {
-            const profileBusy = busy?.id === profile.id
+            const launchBusy = busyKeys.includes(profileBusyKey("launch", profile))
+            const syncBusy = busyKeys.includes(profileBusyKey("sync", profile))
+            const deleteBusy = busyKeys.includes(profileBusyKey("delete", profile))
             return (
               <div
                 key={profile.id}
@@ -748,12 +747,12 @@ function HomeView({
 
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-	                    <input
-	                      className="size-4 rounded border-input accent-current"
-	                      type="checkbox"
-	                      aria-label={`设置 ${profile.name} 是否参与批量同步`}
-	                      title="参与批量同步"
-	                      checked={profile.enabled}
+                    <input
+                      className="size-4 rounded border-input accent-current"
+                      type="checkbox"
+                      aria-label={`设置 ${profile.name} 是否参与批量同步`}
+                      title="参与批量同步"
+                      checked={profile.enabled}
                       onChange={(event) =>
                         onToggleEnabled(profile, event.currentTarget.checked)
                       }
@@ -776,17 +775,21 @@ function HomeView({
                     variant="outline"
                     size="sm"
                     onClick={() => void onLaunch(profile)}
-                    disabled={isBusy}
+                    disabled={launchBusy || isCloneWriteBusy}
                   >
-                    {profileBusy && busy?.action === "launch" ? (
+                    {launchBusy ? (
                       <Loader2 className="animate-spin" data-icon="inline-start" />
                     ) : (
                       <Play data-icon="inline-start" />
                     )}
                     启动
                   </Button>
-                  <Button size="sm" onClick={() => void onSync(profile)} disabled={isBusy}>
-                    {profileBusy && busy?.action === "sync" ? (
+                  <Button
+                    size="sm"
+                    onClick={() => void onSync(profile)}
+                    disabled={isCloneWriteBusy}
+                  >
+                    {syncBusy ? (
                       <Loader2 className="animate-spin" data-icon="inline-start" />
                     ) : (
                       <FolderSync data-icon="inline-start" />
@@ -797,9 +800,9 @@ function HomeView({
                     variant="destructive"
                     size="sm"
                     onClick={() => void onDelete(profile)}
-                    disabled={isBusy}
+                    disabled={isCloneWriteBusy}
                   >
-                    {profileBusy && busy?.action === "delete" ? (
+                    {deleteBusy ? (
                       <Loader2 className="animate-spin" data-icon="inline-start" />
                     ) : (
                       <Trash2 data-icon="inline-start" />
@@ -820,8 +823,7 @@ function SettingsView({
   settings,
   appVersion,
   setSettings,
-  isBusy,
-  busy,
+  busyKeys,
   onSave,
   onRefresh,
   onCheckUpdate,
@@ -830,13 +832,17 @@ function SettingsView({
   settings: AppSettings
   appVersion: string
   setSettings: (settings: AppSettings) => void
-  isBusy: boolean
-  busy: BusyState | null
+  busyKeys: string[]
   onSave: () => Promise<void>
   onRefresh: () => Promise<void>
   onCheckUpdate: () => Promise<void>
   onChooseSource: (callback: (path: string) => void) => void
 }) {
+  const isChooseSourceBusy = busyKeys.includes("choose-source")
+  const isRefreshBusy = busyKeys.includes("refresh")
+  const isSaveBusy = busyKeys.includes("settings-save")
+  const isCheckUpdateBusy = busyKeys.includes("check-update")
+
   return (
     <>
       <section className="rounded-lg border bg-card p-5 shadow-sm">
@@ -873,9 +879,13 @@ function SettingsView({
                 onClick={() =>
                   onChooseSource((path) => setSettings({ ...settings, source_path: path }))
                 }
-                disabled={isBusy}
+                disabled={isChooseSourceBusy}
               >
-                <FolderOpen data-icon="inline-start" />
+                {isChooseSourceBusy ? (
+                  <Loader2 className="animate-spin" data-icon="inline-start" />
+                ) : (
+                  <FolderOpen data-icon="inline-start" />
+                )}
                 选择
               </Button>
             </div>
@@ -908,12 +918,20 @@ function SettingsView({
         </div>
 
         <div className="mt-5 flex flex-wrap justify-end gap-2">
-          <Button variant="outline" onClick={() => void onRefresh()} disabled={isBusy}>
-            <RefreshCw data-icon="inline-start" />
+          <Button variant="outline" onClick={() => void onRefresh()} disabled={isRefreshBusy}>
+            {isRefreshBusy ? (
+              <Loader2 className="animate-spin" data-icon="inline-start" />
+            ) : (
+              <RefreshCw data-icon="inline-start" />
+            )}
             重新载入
           </Button>
-          <Button onClick={() => void onSave()} disabled={isBusy}>
-            <Save data-icon="inline-start" />
+          <Button onClick={() => void onSave()} disabled={isSaveBusy}>
+            {isSaveBusy ? (
+              <Loader2 className="animate-spin" data-icon="inline-start" />
+            ) : (
+              <Save data-icon="inline-start" />
+            )}
             保存设置
           </Button>
         </div>
@@ -929,9 +947,9 @@ function SettingsView({
         <Button
           variant="outline"
           onClick={() => void onCheckUpdate()}
-          disabled={isBusy}
+          disabled={isCheckUpdateBusy}
         >
-          {busy?.action === "check-update" ? (
+          {isCheckUpdateBusy ? (
             <Loader2 className="animate-spin" data-icon="inline-start" />
           ) : (
             <RefreshCw data-icon="inline-start" />
@@ -949,7 +967,7 @@ function CreateDialog({
   draft,
   updateDraft,
   createError,
-  isBusy,
+  busyKeys,
   onCreate,
   onChooseSource,
 }: {
@@ -958,10 +976,14 @@ function CreateDialog({
   draft: CloneProfile | null
   updateDraft: (patch: Partial<CloneProfile>) => void
   createError: string
-  isBusy: boolean
+  busyKeys: string[]
   onCreate: () => Promise<void>
   onChooseSource: (callback: (path: string) => void) => void
 }) {
+  const isCreateBusy = busyKeys.includes("create")
+  const isChooseSourceBusy = busyKeys.includes("choose-source")
+  const isCloneWriteBusy = hasCloneWriteBusy(busyKeys)
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent>
@@ -1006,9 +1028,13 @@ function CreateDialog({
                   type="button"
                   variant="outline"
                   onClick={() => onChooseSource((path) => updateDraft({ source_path: path }))}
-                  disabled={isBusy}
+                  disabled={isChooseSourceBusy}
                 >
-                  <FolderOpen data-icon="inline-start" />
+                  {isChooseSourceBusy ? (
+                    <Loader2 className="animate-spin" data-icon="inline-start" />
+                  ) : (
+                    <FolderOpen data-icon="inline-start" />
+                  )}
                   选择
                 </Button>
               </div>
@@ -1034,11 +1060,13 @@ function CreateDialog({
         ) : null}
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)} disabled={isBusy}>
+          <Button variant="outline" onClick={() => setOpen(false)} disabled={isCreateBusy}>
             取消
           </Button>
-          <Button onClick={() => void onCreate()} disabled={isBusy || !draft}>
-            {isBusy ? <Loader2 className="animate-spin" data-icon="inline-start" /> : null}
+          <Button onClick={() => void onCreate()} disabled={isCloneWriteBusy || !draft}>
+            {isCreateBusy ? (
+              <Loader2 className="animate-spin" data-icon="inline-start" />
+            ) : null}
             创建配置
           </Button>
         </DialogFooter>
