@@ -60,6 +60,14 @@ struct IconInfo {
     data_url: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct UpdateInfo {
+    current_version: String,
+    latest_version: String,
+    latest_url: String,
+    has_update: bool,
+}
+
 #[tauri::command]
 fn get_environment(source_path: Option<String>) -> EnvironmentInfo {
     let source_path = source_path
@@ -75,6 +83,87 @@ fn get_environment(source_path: Option<String>) -> EnvironmentInfo {
         source_bundle_id: plist_value(&info_plist, "CFBundleIdentifier"),
         source_version: plist_value(&info_plist, "CFBundleShortVersionString")
             .or_else(|| plist_value(&info_plist, "CFBundleVersion")),
+    }
+}
+
+#[tauri::command]
+fn get_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+#[tauri::command]
+fn check_for_update() -> Result<UpdateInfo, String> {
+    let output = Command::new("/usr/bin/curl")
+        .arg("-sSL")
+        .arg("--max-time")
+        .arg("12")
+        .arg("-H")
+        .arg("Accept: application/vnd.github+json")
+        .arg("-H")
+        .arg("User-Agent: WxClone")
+        .arg("-w")
+        .arg("\n__WXCLONE_HTTP_STATUS__:%{http_code}")
+        .arg("https://api.github.com/repos/RICHQAQ/WxClone/releases/latest")
+        .output()
+        .map_err(|err| err.to_string())?;
+
+    if !output.status.success() {
+        return Err(command_error(output.stderr));
+    }
+
+    let response = String::from_utf8_lossy(&output.stdout);
+    let marker = "\n__WXCLONE_HTTP_STATUS__:";
+    let Some((body, status)) = response.rsplit_once(marker) else {
+        return Err("无法读取 GitHub 响应状态".to_string());
+    };
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    if status.trim() == "404" {
+        return Ok(UpdateInfo {
+            current_version: current_version.clone(),
+            latest_version: current_version,
+            latest_url: "https://github.com/RICHQAQ/WxClone/releases".to_string(),
+            has_update: false,
+        });
+    }
+    if !status.trim().starts_with('2') {
+        return Err(format!("GitHub 请求失败，HTTP {}", status.trim()));
+    }
+
+    let data: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
+    let tag_name = data
+        .get("tag_name")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "无法读取最新版本号".to_string())?;
+    let latest_url = data
+        .get("html_url")
+        .and_then(|value| value.as_str())
+        .unwrap_or("https://github.com/RICHQAQ/WxClone/releases/latest");
+    let latest_version = tag_name.trim_start_matches('v').to_string();
+
+    Ok(UpdateInfo {
+        has_update: version_greater_than(&latest_version, &current_version),
+        current_version,
+        latest_version,
+        latest_url: latest_url.to_string(),
+    })
+}
+
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    let url = url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("只允许打开 http/https 链接".to_string());
+    }
+
+    let output = Command::new("/usr/bin/open")
+        .arg(url)
+        .output()
+        .map_err(|err| err.to_string())?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(command_error(output.stderr))
     }
 }
 
@@ -113,7 +202,10 @@ fn load_profiles(app: tauri::AppHandle) -> Result<Vec<CloneProfile>, String> {
 }
 
 #[tauri::command]
-fn save_profiles(app: tauri::AppHandle, profiles: Vec<CloneProfile>) -> Result<Vec<CloneProfile>, String> {
+fn save_profiles(
+    app: tauri::AppHandle,
+    profiles: Vec<CloneProfile>,
+) -> Result<Vec<CloneProfile>, String> {
     let normalized = normalize_profiles(profiles)?;
     let path = config_path(&app)?;
     save_profiles_to_path(&path, &normalized)?;
@@ -218,7 +310,10 @@ log "done: ${{DEST}}"
 #[tauri::command]
 fn sync_all(profiles: Vec<CloneProfile>) -> Result<Vec<OperationResult>, String> {
     let mut results = Vec::new();
-    for profile in normalize_profiles(profiles)?.into_iter().filter(|item| item.enabled) {
+    for profile in normalize_profiles(profiles)?
+        .into_iter()
+        .filter(|item| item.enabled)
+    {
         results.push(sync_profile(profile)?);
     }
     Ok(results)
@@ -279,7 +374,10 @@ end try"#;
     if !output.status.success() {
         return Err(command_error(output.stderr));
     }
-    let value = String::from_utf8_lossy(&output.stdout).trim().trim_end_matches('/').to_string();
+    let value = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
     if value.is_empty() {
         Ok(None)
     } else {
@@ -325,7 +423,9 @@ fn get_app_icon(app: tauri::AppHandle, app_path: String) -> Result<Option<IconIn
     } else {
         format!("{icon_file}.icns")
     };
-    let icon_path = Path::new(&app_path).join("Contents/Resources").join(icon_name);
+    let icon_path = Path::new(&app_path)
+        .join("Contents/Resources")
+        .join(icon_name);
     if !icon_path.exists() {
         return Ok(None);
     }
@@ -351,7 +451,10 @@ fn get_app_icon(app: tauri::AppHandle, app_path: String) -> Result<Option<IconIn
 
     let bytes = fs::read(&png_path).map_err(|err| err.to_string())?;
     Ok(Some(IconInfo {
-        data_url: format!("data:image/png;base64,{}", general_purpose::STANDARD.encode(bytes)),
+        data_url: format!(
+            "data:image/png;base64,{}",
+            general_purpose::STANDARD.encode(bytes)
+        ),
     }))
 }
 
@@ -420,8 +523,17 @@ fn save_settings_to_path(path: &Path, settings: &AppSettings) -> Result<(), Stri
 
 fn normalize_settings(mut settings: AppSettings) -> Result<AppSettings, String> {
     settings.install_dir = default_install_dir();
-    settings.base_name = settings.base_name.trim().trim_end_matches(".app").trim().to_string();
-    settings.base_bundle_id = settings.base_bundle_id.trim().trim_end_matches('.').to_string();
+    settings.base_name = settings
+        .base_name
+        .trim()
+        .trim_end_matches(".app")
+        .trim()
+        .to_string();
+    settings.base_bundle_id = settings
+        .base_bundle_id
+        .trim()
+        .trim_end_matches('.')
+        .to_string();
     settings.source_path = if settings.source_path.trim().is_empty() {
         DEFAULT_SOURCE.to_string()
     } else {
@@ -452,7 +564,12 @@ fn normalize_profiles(profiles: Vec<CloneProfile>) -> Result<Vec<CloneProfile>, 
 }
 
 fn normalize_profile(mut profile: CloneProfile) -> Result<CloneProfile, String> {
-    profile.name = profile.name.trim().trim_end_matches(".app").trim().to_string();
+    profile.name = profile
+        .name
+        .trim()
+        .trim_end_matches(".app")
+        .trim()
+        .to_string();
     profile.bundle_id = profile.bundle_id.trim().to_string();
     profile.install_dir = default_install_dir();
     profile.source_path = if profile.source_path.trim().is_empty() {
@@ -489,6 +606,32 @@ fn valid_bundle_id(value: &str) -> bool {
         && !value.starts_with('.')
         && !value.ends_with('.')
         && !value.contains("..")
+}
+
+fn version_greater_than(left: &str, right: &str) -> bool {
+    let left_parts = version_parts(left);
+    let right_parts = version_parts(right);
+    for index in 0..left_parts.len().max(right_parts.len()) {
+        let left_value = *left_parts.get(index).unwrap_or(&0);
+        let right_value = *right_parts.get(index).unwrap_or(&0);
+        if left_value != right_value {
+            return left_value > right_value;
+        }
+    }
+    false
+}
+
+fn version_parts(value: &str) -> Vec<u64> {
+    value
+        .split(['.', '-'])
+        .map(|part| {
+            part.chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u64>()
+                .unwrap_or(0)
+        })
+        .collect()
 }
 
 fn app_path_for(install_dir: &str, name: &str) -> String {
@@ -638,7 +781,10 @@ fn main() {
             choose_source_app,
             reveal_profile_app,
             get_app_icon,
-            check_profile_conflict
+            check_profile_conflict,
+            get_app_version,
+            check_for_update,
+            open_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running wxclone");

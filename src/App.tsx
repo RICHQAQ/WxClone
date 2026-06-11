@@ -75,11 +75,20 @@ type IconInfo = {
   data_url: string
 }
 
+type UpdateInfo = {
+  current_version: string
+  latest_version: string
+  latest_url: string
+  has_update: boolean
+}
+
 type ToastState = {
   id: number
   title: string
   description?: string
   variant?: "default" | "destructive"
+  actionUrl?: string
+  actionLabel?: string
 }
 
 type BusyState = {
@@ -160,6 +169,25 @@ async function callCommand<T>(command: string, args?: Record<string, unknown>) {
     } as T
   }
 
+  if (command === "get_app_version") {
+    return "0.1.1" as T
+  }
+
+  if (command === "check_for_update") {
+    return {
+      current_version: "0.1.1",
+      latest_version: "0.1.1",
+      latest_url: "https://github.com/RICHQAQ/WxClone/releases/latest",
+      has_update: false,
+    } as T
+  }
+
+  if (command === "open_url") {
+    const url = args?.url as string | undefined
+    if (url) window.open(url, "_blank", "noopener,noreferrer")
+    return undefined as T
+  }
+
   if (command === "load_profiles") {
     const raw = window.localStorage.getItem(MOCK_PROFILE_KEY)
     return (raw ? JSON.parse(raw) : defaultProfiles()) as T
@@ -213,6 +241,7 @@ export default function App() {
   const [view, setView] = useState<"home" | "settings">("home")
   const [environment, setEnvironment] = useState<EnvironmentInfo | null>(null)
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS)
+  const [appVersion, setAppVersion] = useState("")
   const [profiles, setProfiles] = useState<CloneProfile[]>([])
   const [draft, setDraft] = useState<CloneProfile | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
@@ -246,15 +275,17 @@ export default function App() {
     setBusy({ action: "refresh" })
     try {
       const loadedSettings = await callCommand<AppSettings>("load_settings")
-      const [env, loadedProfiles] = await Promise.all([
+      const [env, loadedProfiles, version] = await Promise.all([
         callCommand<EnvironmentInfo>("get_environment", {
           sourcePath: loadedSettings.source_path,
         }),
         callCommand<CloneProfile[]>("load_profiles"),
+        callCommand<string>("get_app_version"),
       ])
       setSettings({ ...loadedSettings, install_dir: INSTALL_HINT })
       setEnvironment(env)
       setProfiles(loadedProfiles)
+      setAppVersion(version)
     } catch (err) {
       notifyError(err)
     } finally {
@@ -285,12 +316,31 @@ export default function App() {
     }
   }
 
-  function notify(title: string, description?: string, variant: ToastState["variant"] = "default") {
-    setToast({ id: Date.now(), title, description, variant })
+  function notify(
+    title: string,
+    description?: string,
+    variant: ToastState["variant"] = "default",
+    action?: Pick<ToastState, "actionUrl" | "actionLabel">,
+  ) {
+    setToast({ id: Date.now(), title, description, variant, ...action })
   }
 
   function notifyError(err: unknown) {
     notify("操作失败", String(err), "destructive")
+  }
+
+  async function openUrl(url: string) {
+    try {
+      const isTauri = typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__)
+      if (isTauri) {
+        await callCommand("open_url", { url })
+      } else {
+        window.open(url, "_blank", "noopener,noreferrer")
+      }
+      setToast(null)
+    } catch (err) {
+      notifyError(err)
+    }
   }
 
   async function refreshEnvironment(nextSettings = settings) {
@@ -482,6 +532,28 @@ export default function App() {
     }
   }
 
+  async function checkUpdate() {
+    setBusy({ action: "check-update" })
+    try {
+      const update = await callCommand<UpdateInfo>("check_for_update")
+      setAppVersion(update.current_version)
+      if (update.has_update) {
+        notify(
+          `发现新版本 ${update.latest_version}`,
+          `当前版本 ${update.current_version}，点击打开下载页。`,
+          "default",
+          { actionUrl: update.latest_url, actionLabel: "下载" },
+        )
+      } else {
+        notify("已是最新版本", `当前版本 ${update.current_version}`)
+      }
+    } catch (err) {
+      notifyError(err)
+    } finally {
+      setBusy(null)
+    }
+  }
+
   function toggleEnabled(profile: CloneProfile, enabled: boolean) {
     const nextProfiles = profiles.map((item) =>
       item.id === profile.id ? { ...item, enabled } : item,
@@ -543,15 +615,18 @@ export default function App() {
         ) : (
           <SettingsView
             settings={settings}
+            appVersion={appVersion}
             setSettings={setSettings}
             isBusy={isBusy}
+            busy={busy}
             onSave={saveCurrentSettings}
             onRefresh={refresh}
+            onCheckUpdate={checkUpdate}
             onChooseSource={(callback) => void chooseSourcePath(callback)}
           />
         )}
 
-        <Toast toast={toast} onClose={() => setToast(null)} />
+        <Toast toast={toast} onClose={() => setToast(null)} onOpenUrl={openUrl} />
       </div>
 
       <CreateDialog
@@ -654,7 +729,7 @@ function HomeView({
           <div>
             <h2 className="text-base font-semibold tracking-normal">副本列表</h2>
             <p className="text-sm text-muted-foreground">
-              {profiles.length} 个配置，{enabledCount} 个启用
+              {profiles.length} 个配置，{enabledCount} 个参与批量同步
             </p>
           </div>
         </div>
@@ -673,17 +748,19 @@ function HomeView({
 
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <input
-                      className="size-4 rounded border-input accent-current"
-                      type="checkbox"
-                      checked={profile.enabled}
+	                    <input
+	                      className="size-4 rounded border-input accent-current"
+	                      type="checkbox"
+	                      aria-label={`设置 ${profile.name} 是否参与批量同步`}
+	                      title="参与批量同步"
+	                      checked={profile.enabled}
                       onChange={(event) =>
                         onToggleEnabled(profile, event.currentTarget.checked)
                       }
                     />
                     <div className="truncate font-medium">{profile.name}</div>
                     <Badge variant="secondary" className="shrink-0">
-                      {profile.enabled ? "启用" : "停用"}
+                      {profile.enabled ? "参与批量同步" : "跳过批量同步"}
                     </Badge>
                   </div>
                   <div className="mt-2 min-w-0 rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
@@ -741,99 +818,128 @@ function HomeView({
 
 function SettingsView({
   settings,
+  appVersion,
   setSettings,
   isBusy,
+  busy,
   onSave,
   onRefresh,
+  onCheckUpdate,
   onChooseSource,
 }: {
   settings: AppSettings
+  appVersion: string
   setSettings: (settings: AppSettings) => void
   isBusy: boolean
+  busy: BusyState | null
   onSave: () => Promise<void>
   onRefresh: () => Promise<void>
+  onCheckUpdate: () => Promise<void>
   onChooseSource: (callback: (path: string) => void) => void
 }) {
   return (
-    <section className="rounded-lg border bg-card p-5 shadow-sm">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold tracking-normal">基础设置</h2>
-        <p className="text-sm text-muted-foreground">
-          创建弹窗会默认复用这里的值，再自动追加序号。
-        </p>
-      </div>
-
-      <Separator className="my-5" />
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <div className="flex flex-col gap-2">
-          <Label>创建位置</Label>
-          <div className="flex h-10 items-center rounded-md border bg-muted px-3 text-sm text-muted-foreground">
-            固定为 /Applications
-          </div>
+    <>
+      <section className="rounded-lg border bg-card p-5 shadow-sm">
+        <div className="flex flex-col gap-1">
+          <h2 className="text-lg font-semibold tracking-normal">基础设置</h2>
+          <p className="text-sm text-muted-foreground">
+            创建弹窗会默认复用这里的值，再自动追加序号。
+          </p>
         </div>
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="source-path">源应用路径</Label>
-          <div className="flex gap-2">
+
+        <Separator className="my-5" />
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="flex flex-col gap-2">
+            <Label>创建位置</Label>
+            <div className="flex h-10 items-center rounded-md border bg-muted px-3 text-sm text-muted-foreground">
+              固定为 /Applications
+            </div>
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="source-path">源应用路径</Label>
+            <div className="flex gap-2">
+              <Input
+                id="source-path"
+                value={settings.source_path}
+                onChange={(event) =>
+                  setSettings({ ...settings, source_path: event.currentTarget.value })
+                }
+                placeholder="/Applications/WeChat.app"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() =>
+                  onChooseSource((path) => setSettings({ ...settings, source_path: path }))
+                }
+                disabled={isBusy}
+              >
+                <FolderOpen data-icon="inline-start" />
+                选择
+              </Button>
+            </div>
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="base-name">基础名字</Label>
             <Input
-              id="source-path"
-              value={settings.source_path}
+              id="base-name"
+              value={settings.base_name}
               onChange={(event) =>
-                setSettings({ ...settings, source_path: event.currentTarget.value })
+                setSettings({ ...settings, base_name: event.currentTarget.value })
               }
-              placeholder="/Applications/WeChat.app"
+              placeholder="微信"
             />
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() =>
-                onChooseSource((path) => setSettings({ ...settings, source_path: path }))
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="base-bundle">基础 Bundle ID</Label>
+            <Input
+              id="base-bundle"
+              value={settings.base_bundle_id}
+              onChange={(event) =>
+                setSettings({
+                  ...settings,
+                  base_bundle_id: event.currentTarget.value,
+                })
               }
-              disabled={isBusy}
-            >
-              <FolderOpen data-icon="inline-start" />
-              选择
-            </Button>
+              placeholder="net.maclub.wechat"
+            />
           </div>
         </div>
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="base-name">基础名字</Label>
-          <Input
-            id="base-name"
-            value={settings.base_name}
-            onChange={(event) =>
-              setSettings({ ...settings, base_name: event.currentTarget.value })
-            }
-            placeholder="微信"
-          />
-        </div>
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="base-bundle">基础 Bundle ID</Label>
-          <Input
-            id="base-bundle"
-            value={settings.base_bundle_id}
-            onChange={(event) =>
-              setSettings({
-                ...settings,
-                base_bundle_id: event.currentTarget.value,
-              })
-            }
-            placeholder="net.maclub.wechat"
-          />
-        </div>
-      </div>
 
-      <div className="mt-5 flex flex-wrap justify-end gap-2">
-        <Button variant="outline" onClick={() => void onRefresh()} disabled={isBusy}>
-          <RefreshCw data-icon="inline-start" />
-          重新载入
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
+          <Button variant="outline" onClick={() => void onRefresh()} disabled={isBusy}>
+            <RefreshCw data-icon="inline-start" />
+            重新载入
+          </Button>
+          <Button onClick={() => void onSave()} disabled={isBusy}>
+            <Save data-icon="inline-start" />
+            保存设置
+          </Button>
+        </div>
+      </section>
+
+      <section className="flex items-center justify-between gap-4 rounded-lg border bg-card px-5 py-4 shadow-sm">
+        <div className="min-w-0">
+          <div className="text-sm font-medium">当前版本</div>
+          <div className="mt-1 text-sm text-muted-foreground">
+            {appVersion ? `v${appVersion}` : "读取中"}
+          </div>
+        </div>
+        <Button
+          variant="outline"
+          onClick={() => void onCheckUpdate()}
+          disabled={isBusy}
+        >
+          {busy?.action === "check-update" ? (
+            <Loader2 className="animate-spin" data-icon="inline-start" />
+          ) : (
+            <RefreshCw data-icon="inline-start" />
+          )}
+          检查更新
         </Button>
-        <Button onClick={() => void onSave()} disabled={isBusy}>
-          <Save data-icon="inline-start" />
-          保存设置
-        </Button>
-      </div>
-    </section>
+      </section>
+    </>
   )
 }
 
@@ -944,17 +1050,34 @@ function CreateDialog({
 function Toast({
   toast,
   onClose,
+  onOpenUrl,
 }: {
   toast: ToastState | null
   onClose: () => void
+  onOpenUrl: (url: string) => Promise<void>
 }) {
   if (!toast) return null
+
+  const canOpen = Boolean(toast.actionUrl)
 
   return (
     <div className="fixed bottom-6 right-6 z-50 w-[min(360px,calc(100vw-3rem))]">
       <div
+        role={canOpen ? "button" : "status"}
+        tabIndex={canOpen ? 0 : undefined}
+        onClick={() => {
+          if (toast.actionUrl) void onOpenUrl(toast.actionUrl)
+        }}
+        onKeyDown={(event) => {
+          if (!toast.actionUrl) return
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault()
+            void onOpenUrl(toast.actionUrl)
+          }
+        }}
         className={cn(
           "flex items-start gap-3 rounded-lg border bg-card p-4 text-card-foreground shadow-lg",
+          canOpen && "cursor-pointer transition hover:border-primary/50 hover:shadow-xl",
           toast.variant === "destructive" && "border-destructive/40",
         )}
       >
@@ -977,8 +1100,21 @@ function Toast({
               {toast.description}
             </div>
           ) : null}
+          {toast.actionUrl ? (
+            <div className="mt-2 text-xs font-medium text-primary">
+              {toast.actionLabel ?? "打开链接"}
+            </div>
+          ) : null}
         </div>
-        <Button variant="ghost" size="sm" onClick={onClose} className="h-8 px-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={(event) => {
+            event.stopPropagation()
+            onClose()
+          }}
+          className="h-8 px-2"
+        >
           关闭
         </Button>
       </div>
