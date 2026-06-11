@@ -217,7 +217,6 @@ export default function App() {
   const [draft, setDraft] = useState<CloneProfile | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [busy, setBusy] = useState<BusyState | null>(null)
-  const [error, setError] = useState("")
   const [createError, setCreateError] = useState("")
   const [sourceIconPath, setSourceIconPath] = useState<string | null>(null)
   const [profileIconPaths, setProfileIconPaths] = useState<Record<string, string | null>>({})
@@ -245,7 +244,6 @@ export default function App() {
 
   async function refresh() {
     setBusy({ action: "refresh" })
-    setError("")
     try {
       const loadedSettings = await callCommand<AppSettings>("load_settings")
       const [env, loadedProfiles] = await Promise.all([
@@ -258,7 +256,7 @@ export default function App() {
       setEnvironment(env)
       setProfiles(loadedProfiles)
     } catch (err) {
-      setError(String(err))
+      notifyError(err)
     } finally {
       setBusy(null)
     }
@@ -289,6 +287,10 @@ export default function App() {
 
   function notify(title: string, description?: string, variant: ToastState["variant"] = "default") {
     setToast({ id: Date.now(), title, description, variant })
+  }
+
+  function notifyError(err: unknown) {
+    notify("操作失败", String(err), "destructive")
   }
 
   async function refreshEnvironment(nextSettings = settings) {
@@ -329,7 +331,6 @@ export default function App() {
   async function createProfile() {
     if (!draft) return
     setCreateError("")
-    setError("")
 
     const localError = localConflict(draft)
     if (localError) {
@@ -371,7 +372,7 @@ export default function App() {
       setCreateOpen(false)
       setDraft(null)
     } catch (err) {
-      setCreateError(String(err))
+      notifyError(err)
     } finally {
       setBusy(null)
     }
@@ -379,14 +380,13 @@ export default function App() {
 
   async function saveCurrentSettings() {
     setBusy({ action: "settings-save" })
-    setError("")
     try {
       const saved = await callCommand<AppSettings>("save_settings", { settings })
       setSettings(saved)
       await refreshEnvironment(saved)
       notify("设置已保存")
     } catch (err) {
-      setError(String(err))
+      notifyError(err)
     } finally {
       setBusy(null)
     }
@@ -402,7 +402,6 @@ export default function App() {
 
   async function syncOne(profile: CloneProfile) {
     setBusy({ action: "sync", id: profile.id })
-    setError("")
     try {
       const saved = await saveProfiles()
       const current = saved.find((item) => item.id === profile.id)
@@ -412,7 +411,7 @@ export default function App() {
       })
       notify(`已同步版本 ${current.name}`, result.app_path)
     } catch (err) {
-      setError(String(err))
+      notifyError(err)
     } finally {
       setBusy(null)
     }
@@ -420,7 +419,6 @@ export default function App() {
 
   async function syncEnabled() {
     setBusy({ action: "sync-all" })
-    setError("")
     try {
       const saved = await saveProfiles()
       const results = await callCommand<OperationResult[]>("sync_all", {
@@ -428,7 +426,7 @@ export default function App() {
       })
       notify("版本同步完成", `已同步 ${results.length} 个微信副本`)
     } catch (err) {
-      setError(String(err))
+      notifyError(err)
     } finally {
       setBusy(null)
     }
@@ -436,12 +434,11 @@ export default function App() {
 
   async function launch(profile: CloneProfile) {
     setBusy({ action: "launch", id: profile.id })
-    setError("")
     try {
       await callCommand("launch_profile", { profile })
       notify("已启动", profile.name)
     } catch (err) {
-      setError(String(err))
+      notifyError(err)
     } finally {
       setBusy(null)
     }
@@ -449,12 +446,11 @@ export default function App() {
 
   async function reveal(profile: CloneProfile) {
     setBusy({ action: "reveal", id: profile.id })
-    setError("")
     try {
       await callCommand("reveal_profile_app", { profile })
       notify("已输出到 Finder", appPathFor(profile))
     } catch (err) {
-      setError(String(err))
+      notifyError(err)
     } finally {
       setBusy(null)
     }
@@ -462,14 +458,13 @@ export default function App() {
 
   async function deleteProfile(profile: CloneProfile) {
     setBusy({ action: "delete", id: profile.id })
-    setError("")
     try {
       await callCommand("remove_profile_app", { profile })
       const nextProfiles = profiles.filter((item) => item.id !== profile.id)
       await saveProfiles(nextProfiles)
       notify("已删除", profile.name)
     } catch (err) {
-      setError(String(err))
+      notifyError(err)
     } finally {
       setBusy(null)
     }
@@ -477,12 +472,11 @@ export default function App() {
 
   async function chooseSourcePath(onChoose: (path: string) => void) {
     setBusy({ action: "choose-source" })
-    setError("")
     try {
       const path = await callCommand<string | null>("choose_source_app")
       if (path) onChoose(path)
     } catch (err) {
-      setError(String(err))
+      notifyError(err)
     } finally {
       setBusy(null)
     }
@@ -556,14 +550,6 @@ export default function App() {
             onChooseSource={(callback) => void chooseSourcePath(callback)}
           />
         )}
-
-        {error ? (
-          <Alert variant="destructive">
-            <AlertCircle />
-            <AlertTitle>操作失败</AlertTitle>
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        ) : null}
 
         <Toast toast={toast} onClose={() => setToast(null)} />
       </div>
