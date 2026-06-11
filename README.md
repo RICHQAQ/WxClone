@@ -4,7 +4,7 @@
   <img src="./src-tauri/icons/icon.png" alt="WxClone Logo" width="128" height="128">
 </p>
 
-一个简单的 macOS 微信多开管理器。它把手工命令包装成 Tauri 应用，支持配置多个克隆槽位，并在微信升级后统一同步重建。
+一个简单的 macOS 微信多开管理器。它把手工命令包装成 Tauri 应用，支持配置多个克隆槽位，并在微信升级后可以统一同步重建。
 
 ## 截图
 
