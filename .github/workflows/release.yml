@@ -52,6 +52,7 @@ jobs:
           releaseBody: "自动构建的 macOS 安装包。"
           releaseDraft: true
           prerelease: false
+          generateReleaseNotes: true
           args: --target universal-apple-darwin --ci -v --bundles app
 
       - name: Create DMG package
