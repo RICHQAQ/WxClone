@@ -410,7 +410,7 @@ export default function App() {
       const result = await callCommand<OperationResult>("sync_profile", {
         profile: current,
       })
-      notify(`已同步 ${current.name}`, result.app_path)
+      notify(`已同步版本 ${current.name}`, result.app_path)
     } catch (err) {
       setError(String(err))
     } finally {
@@ -426,7 +426,7 @@ export default function App() {
       const results = await callCommand<OperationResult[]>("sync_all", {
         profiles: saved,
       })
-      notify("同步完成", `已同步 ${results.length} 个微信副本`)
+      notify("版本同步完成", `已同步 ${results.length} 个微信副本`)
     } catch (err) {
       setError(String(err))
     } finally {
@@ -657,7 +657,7 @@ function HomeView({
               ) : (
                 <FolderSync data-icon="inline-start" />
               )}
-              同步全部
+              同步全部版本
             </Button>
           </div>
         </div>
@@ -728,7 +728,7 @@ function HomeView({
                     ) : (
                       <FolderSync data-icon="inline-start" />
                     )}
-                    同步
+                    同步版本
                   </Button>
                   <Button
                     variant="destructive"
