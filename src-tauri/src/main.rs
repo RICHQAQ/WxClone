@@ -181,6 +181,17 @@ log "set Bundle ID"
 log "set display name"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$DEST/Contents/Info.plist" || true
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_NAME" "$DEST/Contents/Info.plist" || true
+log "set localized display names"
+find "$DEST/Contents/Resources" -name InfoPlist.strings -type f -print 2>/dev/null | while IFS= read -r STRINGS_FILE
+do
+  log "update localized plist: $STRINGS_FILE"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$STRINGS_FILE" 2>/dev/null || \
+    /usr/libexec/PlistBuddy -c "Add :CFBundleName string $APP_NAME" "$STRINGS_FILE" || \
+    fail "failed to set localized CFBundleName: $STRINGS_FILE" 33
+  /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_NAME" "$STRINGS_FILE" 2>/dev/null || \
+    /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string $APP_NAME" "$STRINGS_FILE" || \
+    fail "failed to set localized CFBundleDisplayName: $STRINGS_FILE" 34
+done
 log "codesign"
 /usr/bin/codesign --force --deep --sign - "$DEST" || {{
   fail "codesign failed: ${{DEST}}" 32
@@ -254,30 +265,6 @@ fi
 fn choose_source_app() -> Result<Option<String>, String> {
     let script = r#"try
   POSIX path of (choose file with prompt "选择微信源应用" of type {"app"})
-on error number -128
-  return ""
-end try"#;
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .map_err(|err| err.to_string())?;
-
-    if !output.status.success() {
-        return Err(command_error(output.stderr));
-    }
-    let value = String::from_utf8_lossy(&output.stdout).trim().trim_end_matches('/').to_string();
-    if value.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(value))
-    }
-}
-
-#[tauri::command]
-fn choose_install_dir() -> Result<Option<String>, String> {
-    let script = r#"try
-  POSIX path of (choose folder with prompt "选择创建位置")
 on error number -128
   return ""
 end try"#;
@@ -451,7 +438,7 @@ fn save_settings_to_path(path: &Path, settings: &AppSettings) -> Result<(), Stri
 }
 
 fn normalize_settings(mut settings: AppSettings) -> Result<AppSettings, String> {
-    settings.install_dir = normalize_dir(&settings.install_dir)?;
+    settings.install_dir = default_install_dir();
     settings.base_name = settings.base_name.trim().trim_end_matches(".app").trim().to_string();
     settings.base_bundle_id = settings.base_bundle_id.trim().trim_end_matches('.').to_string();
     settings.source_path = if settings.source_path.trim().is_empty() {
@@ -486,11 +473,7 @@ fn normalize_profiles(profiles: Vec<CloneProfile>) -> Result<Vec<CloneProfile>, 
 fn normalize_profile(mut profile: CloneProfile) -> Result<CloneProfile, String> {
     profile.name = profile.name.trim().trim_end_matches(".app").trim().to_string();
     profile.bundle_id = profile.bundle_id.trim().to_string();
-    profile.install_dir = if profile.install_dir.trim().is_empty() {
-        "/Applications".to_string()
-    } else {
-        normalize_dir(&profile.install_dir)?
-    };
+    profile.install_dir = default_install_dir();
     profile.source_path = if profile.source_path.trim().is_empty() {
         DEFAULT_SOURCE.to_string()
     } else {
@@ -515,17 +498,6 @@ fn normalize_profile(mut profile: CloneProfile) -> Result<CloneProfile, String> 
         return Err("微信源路径必须指向 .app 应用包".to_string());
     }
     Ok(profile)
-}
-
-fn normalize_dir(path: &str) -> Result<String, String> {
-    let trimmed = path.trim().trim_end_matches('/').to_string();
-    if trimmed.is_empty() {
-        return Err("创建位置不能为空".to_string());
-    }
-    if !trimmed.starts_with('/') {
-        return Err("创建位置必须是绝对路径".to_string());
-    }
-    Ok(trimmed)
 }
 
 fn valid_bundle_id(value: &str) -> bool {
@@ -658,7 +630,6 @@ fn main() {
             launch_profile,
             remove_profile_app,
             choose_source_app,
-            choose_install_dir,
             reveal_profile_app,
             get_app_icon,
             check_profile_conflict

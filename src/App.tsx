@@ -108,7 +108,7 @@ function cleanDir(path: string) {
 }
 
 function appPathFor(profile: Pick<CloneProfile, "name" | "install_dir">) {
-  return `${cleanDir(profile.install_dir)}/${cleanAppName(profile.name)}.app`
+  return `${INSTALL_HINT}/${cleanAppName(profile.name)}.app`
 }
 
 function defaultProfiles(settings = DEFAULT_SETTINGS): CloneProfile[] {
@@ -117,7 +117,7 @@ function defaultProfiles(settings = DEFAULT_SETTINGS): CloneProfile[] {
     name: `${settings.base_name}${index}`,
     bundle_id: `${settings.base_bundle_id}.clone${index}`,
     source_path: settings.source_path,
-    install_dir: settings.install_dir,
+    install_dir: INSTALL_HINT,
     enabled: true,
   }))
 }
@@ -133,7 +133,7 @@ function draftFromSettings(settings: AppSettings, profiles: CloneProfile[]): Clo
     name: `${settings.base_name}${index}`,
     bundle_id: `${settings.base_bundle_id}.clone${index}`,
     source_path: settings.source_path,
-    install_dir: settings.install_dir,
+    install_dir: INSTALL_HINT,
     enabled: true,
   }
 }
@@ -146,13 +146,14 @@ async function callCommand<T>(command: string, args?: Record<string, unknown>) {
 
   if (command === "load_settings") {
     const raw = window.localStorage.getItem(MOCK_SETTINGS_KEY)
-    return (raw ? JSON.parse(raw) : DEFAULT_SETTINGS) as T
+    return { ...(raw ? JSON.parse(raw) : DEFAULT_SETTINGS), install_dir: INSTALL_HINT } as T
   }
 
   if (command === "save_settings") {
     const settings = args?.settings as AppSettings
-    window.localStorage.setItem(MOCK_SETTINGS_KEY, JSON.stringify(settings))
-    return settings as T
+    const fixedSettings = { ...settings, install_dir: INSTALL_HINT }
+    window.localStorage.setItem(MOCK_SETTINGS_KEY, JSON.stringify(fixedSettings))
+    return fixedSettings as T
   }
 
   if (command === "get_environment") {
@@ -185,7 +186,7 @@ async function callCommand<T>(command: string, args?: Record<string, unknown>) {
     } as T
   }
 
-  if (command === "choose_source_app" || command === "choose_install_dir") {
+  if (command === "choose_source_app") {
     return null as T
   }
 
@@ -259,7 +260,7 @@ export default function App() {
         }),
         callCommand<CloneProfile[]>("load_profiles"),
       ])
-      setSettings(loadedSettings)
+      setSettings({ ...loadedSettings, install_dir: INSTALL_HINT })
       setEnvironment(env)
       setProfiles(loadedProfiles)
     } catch (err) {
@@ -493,19 +494,6 @@ export default function App() {
     }
   }
 
-  async function chooseInstallDir(onChoose: (path: string) => void) {
-    setBusy({ action: "choose-dir" })
-    setError("")
-    try {
-      const path = await callCommand<string | null>("choose_install_dir")
-      if (path) onChoose(path)
-    } catch (err) {
-      setError(String(err))
-    } finally {
-      setBusy(null)
-    }
-  }
-
   function toggleEnabled(profile: CloneProfile, enabled: boolean) {
     const nextProfiles = profiles.map((item) =>
       item.id === profile.id ? { ...item, enabled } : item,
@@ -572,7 +560,6 @@ export default function App() {
             onSave={saveCurrentSettings}
             onRefresh={refresh}
             onChooseSource={(callback) => void chooseSourcePath(callback)}
-            onChooseDir={(callback) => void chooseInstallDir(callback)}
           />
         )}
 
@@ -596,7 +583,6 @@ export default function App() {
         isBusy={isBusy}
         onCreate={createProfile}
         onChooseSource={(callback) => void chooseSourcePath(callback)}
-        onChooseDir={(callback) => void chooseInstallDir(callback)}
       />
     </main>
   )
@@ -780,7 +766,6 @@ function SettingsView({
   onSave,
   onRefresh,
   onChooseSource,
-  onChooseDir,
 }: {
   settings: AppSettings
   setSettings: (settings: AppSettings) => void
@@ -788,7 +773,6 @@ function SettingsView({
   onSave: () => Promise<void>
   onRefresh: () => Promise<void>
   onChooseSource: (callback: (path: string) => void) => void
-  onChooseDir: (callback: (path: string) => void) => void
 }) {
   return (
     <section className="rounded-lg border bg-card p-5 shadow-sm">
@@ -803,27 +787,9 @@ function SettingsView({
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="flex flex-col gap-2">
-          <Label htmlFor="install-dir">创建位置</Label>
-          <div className="flex gap-2">
-            <Input
-              id="install-dir"
-              value={settings.install_dir}
-              onChange={(event) =>
-                setSettings({ ...settings, install_dir: event.currentTarget.value })
-              }
-              placeholder="/Applications"
-            />
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() =>
-                onChooseDir((path) => setSettings({ ...settings, install_dir: path }))
-              }
-              disabled={isBusy}
-            >
-              <FolderOpen data-icon="inline-start" />
-              选择
-            </Button>
+          <Label>创建位置</Label>
+          <div className="flex h-10 items-center rounded-md border bg-muted px-3 text-sm text-muted-foreground">
+            固定为 /Applications
           </div>
         </div>
         <div className="flex flex-col gap-2">
@@ -900,7 +866,6 @@ function CreateDialog({
   isBusy,
   onCreate,
   onChooseSource,
-  onChooseDir,
 }: {
   open: boolean
   setOpen: (open: boolean) => void
@@ -910,7 +875,6 @@ function CreateDialog({
   isBusy: boolean
   onCreate: () => Promise<void>
   onChooseSource: (callback: (path: string) => void) => void
-  onChooseDir: (callback: (path: string) => void) => void
 }) {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -964,22 +928,9 @@ function CreateDialog({
               </div>
             </div>
             <div className="flex flex-col gap-2">
-              <Label htmlFor="create-dir">创建位置</Label>
-              <div className="flex gap-2">
-                <Input
-                  id="create-dir"
-                  value={draft.install_dir}
-                  onChange={(event) => updateDraft({ install_dir: event.currentTarget.value })}
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => onChooseDir((path) => updateDraft({ install_dir: path }))}
-                  disabled={isBusy}
-                >
-                  <FolderOpen data-icon="inline-start" />
-                  选择
-                </Button>
+              <Label>创建位置</Label>
+              <div className="flex h-10 items-center rounded-md border bg-muted px-3 text-sm text-muted-foreground">
+                固定为 /Applications
               </div>
             </div>
             <div className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
