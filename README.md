@@ -1,6 +1,20 @@
 # WxClone
 
+<p align="center">
+  <img src="./src-tauri/icons/icon.png" alt="WxClone Logo" width="128" height="128">
+</p>
+
 一个简单的 macOS 微信多开管理器。它把手工命令包装成 Tauri 应用，支持配置多个克隆槽位，并在微信升级后统一同步重建。
+
+## 截图
+
+<p align="center">
+  <img src="./docs/images/app-main.png" alt="WxClone 主界面" width="800">
+</p>
+
+<p align="center">
+  <img src="./docs/images/app-create.png" alt="WxClone 创建副本" width="800">
+</p>
 
 ## 功能
 
@@ -32,8 +46,14 @@ pnpm tauri:build
 
 同步副本时需要写入 `/Applications` 并重新签名应用，因此 macOS 会弹出管理员授权。该工具只重建应用包，不会删除微信聊天记录。微信升级后，重新打开 WxClone 点击“同步全部”即可让副本跟随新版应用。
 
+免责声明：本工具仅用于本机微信应用多开副本管理，不保证微信账号一定不会被误封，使用前请自行评估风险。
+
 管理员脚本的详细执行日志会追加保存到：
 
 ```text
 ~/Library/Logs/com.richqaq.wxclone/wxclone.log
 ```
+
+## 参考
+
+- [chowyu12/wechat](https://github.com/chowyu12/wechat)
